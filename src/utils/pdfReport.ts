@@ -1,4 +1,4 @@
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { DEVICE_BY_ID, MEASUREMENT_CONTEXTS } from '../data/devicesAndSeeds';
 import { GlucoseReading, LocalProfile } from '../types/glucose';
@@ -9,13 +9,22 @@ import {
   formatShortDateTime,
 } from './glucoseMath';
 
-export function exportClinicalPdfReport(
+export interface PdfExportResult {
+  fileName: string;
+  sharedViaSystem: boolean;
+}
+
+export function buildClinicalPdfDocument(
   profile: LocalProfile,
   readings: GlucoseReading[],
   rangeLabel: string
-): string {
+): { doc: jsPDF; fileName: string } {
   const sorted = [...readings].sort((a, b) => b.timestamp - a.timestamp);
-  const stats = computeGlucoseStats(sorted);
+  const stats = computeGlucoseStats(
+    sorted,
+    profile.targetMinMgDl,
+    profile.targetMaxMgDl
+  );
   const unit = profile.unitPreference;
 
   const doc = new jsPDF({
@@ -25,18 +34,18 @@ export function exportClinicalPdfReport(
   });
 
   // Header clinical bar
-  doc.setFillColor(15, 23, 42);
+  doc.setFillColor(15, 118, 110);
   doc.rect(0, 0, 210, 32, 'F');
 
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
-  doc.text('DbSas', 14, 15);
+  doc.text('Glucosoft App', 14, 15);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10);
-  doc.setTextColor(148, 163, 184);
-  doc.text('Reporte Clínico de Glucometría Local-First', 14, 22);
+  doc.setTextColor(204, 251, 241);
+  doc.text('Reporte de Glucosa para Consulta Médica', 14, 22);
 
   const generatedAt = new Intl.DateTimeFormat('es-ES', {
     dateStyle: 'medium',
@@ -50,16 +59,16 @@ export function exportClinicalPdfReport(
   doc.setTextColor(15, 23, 42);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
-  doc.text(`Paciente: ${profile.name}`, 14, 44);
+  doc.text(`Perfil: ${profile.name}`, 14, 44);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9.5);
   doc.setTextColor(71, 85, 105);
   doc.text(
-    `Unidad clínica: ${unit}   |   Objetivo basal: ${formatGlucoseValue(
+    `Unidad: ${unit}   |   Meta orientativa: ${formatGlucoseValue(
       profile.targetMinMgDl,
       unit
-    )} - ${formatGlucoseValue(profile.targetMaxMgDl, unit)} ${unit}   |   Total de tomas: ${
+    )} - ${formatGlucoseValue(profile.targetMaxMgDl, unit)} ${unit}   |   Mediciones: ${
       stats.count
     }`,
     14,
@@ -70,11 +79,17 @@ export function exportClinicalPdfReport(
   const kpis = [
     {
       label: 'Promedio del periodo',
-      value: `${formatGlucoseValue(stats.avgMgDl, unit)} ${unit}`,
+      value:
+        stats.count > 0
+          ? `${formatGlucoseValue(stats.avgMgDl, unit)} ${unit}`
+          : '—',
     },
     {
-      label: 'Tiempo en rango',
-      value: `${stats.inRangePercent}% (${stats.normalCount}/${stats.count})`,
+      label: 'Dentro de meta',
+      value:
+        stats.count > 0
+          ? `${stats.inRangePercent}% (${stats.normalCount}/${stats.count})`
+          : '—',
     },
     {
       label: 'Mínima / Máxima',
@@ -87,7 +102,7 @@ export function exportClinicalPdfReport(
           : '—',
     },
     {
-      label: 'GMI Estimado',
+      label: 'GMI orientativo',
       value: stats.count > 0 ? `${stats.estimatedGmi}%` : '—',
     },
   ];
@@ -110,14 +125,21 @@ export function exportClinicalPdfReport(
     doc.text(kpi.value, x + 3, 71);
   });
 
-  // Distribution summary line
+  // Distribution summary & orientative disclaimer
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(8.8);
   doc.setTextColor(51, 65, 85);
   doc.text(
-    `Distribución semafórica:  En rango: ${stats.normalCount}   ·   Precaución: ${stats.cautionCount}   ·   Alerta: ${stats.alertCount}`,
+    `Resumen orientativo:  En meta: ${stats.normalCount}   ·   Precaución: ${stats.cautionCount}   ·   Atención: ${stats.alertCount}`,
     14,
     83
+  );
+  doc.setFontSize(7.8);
+  doc.setTextColor(100, 116, 139);
+  doc.text(
+    'Nota: Los colores y rangos son orientativos según la configuración del perfil y no constituyen diagnóstico médico.',
+    14,
+    88.5
   );
 
   // Table rows
@@ -126,8 +148,17 @@ export function exportClinicalPdfReport(
   );
 
   const tableRows = sorted.map((r) => {
-    const { label: statusLabel } = evaluateReadingSeverity(r.valueMgDl, r.context);
-    const deviceLabel = DEVICE_BY_ID[r.deviceInfo]?.displayName ?? r.deviceInfo;
+    const { label: statusLabel } = evaluateReadingSeverity(
+      r.valueMgDl,
+      r.context,
+      profile.targetMinMgDl,
+      profile.targetMaxMgDl
+    );
+    const deviceLabel =
+      r.deviceModel ||
+      (r.deviceId ? DEVICE_BY_ID[r.deviceId]?.displayName : '') ||
+      'No especificado';
+    const methodLabel = r.captureMethod === 'bluetooth' ? 'Bluetooth' : 'Manual';
     const tagsAndNote = [
       r.quickTags.length > 0 ? r.quickTags.join(', ') : '',
       r.note ? r.note : '',
@@ -140,22 +171,22 @@ export function exportClinicalPdfReport(
       `${formatGlucoseValue(r.valueMgDl, unit)} ${unit}`,
       statusLabel,
       contextMap[r.context] ?? r.context,
-      deviceLabel,
+      `${deviceLabel} (${methodLabel})`,
       tagsAndNote || '—',
     ];
   });
 
   autoTable(doc, {
-    startY: 88,
+    startY: 93,
     head: [
-      ['Fecha y hora', 'Glucosa', 'Estado', 'Contexto', 'Dispositivo', 'Etiquetas / Notas'],
+      ['Fecha y hora', 'Glucosa', 'Referencia', 'Contexto', 'Glucómetro / Método', 'Notas'],
     ],
     body: tableRows,
     theme: 'grid',
     styles: {
       font: 'helvetica',
-      fontSize: 8.2,
-      cellPadding: 2.8,
+      fontSize: 8.0,
+      cellPadding: 2.6,
       textColor: [30, 41, 59],
       lineColor: [226, 232, 240],
       lineWidth: 0.2,
@@ -168,7 +199,7 @@ export function exportClinicalPdfReport(
     didParseCell: (data) => {
       if (data.section === 'body' && data.column.index === 2) {
         const text = String(data.cell.raw);
-        if (text.includes('Alerta')) {
+        if (text.includes('Atención')) {
           data.cell.styles.textColor = [220, 38, 38];
           data.cell.styles.fontStyle = 'bold';
         } else if (text.includes('Precaución')) {
@@ -189,7 +220,7 @@ export function exportClinicalPdfReport(
     doc.setFontSize(8);
     doc.setTextColor(148, 163, 184);
     doc.text(
-      `DbSas · Almacenamiento 100% local en el dispositivo · Página ${i} de ${pageCount}`,
+      `Glucosoft App · Almacenamiento local privado · Página ${i} de ${pageCount}`,
       14,
       287
     );
@@ -199,7 +230,38 @@ export function exportClinicalPdfReport(
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-zA-Z0-9]+/g, '_');
-  const fileName = `DbSas_Reporte_${safeName}.pdf`;
+  const fileName = `Glucosoft_Reporte_${safeName || 'Perfil'}.pdf`;
+  return { doc, fileName };
+}
+
+export async function exportClinicalPdfReport(
+  profile: LocalProfile,
+  readings: GlucoseReading[],
+  rangeLabel: string,
+  shareIfAvailable = false
+): Promise<PdfExportResult> {
+  const { doc, fileName } = buildClinicalPdfDocument(profile, readings, rangeLabel);
+
+  if (shareIfAvailable && typeof navigator !== 'undefined' && 'share' in navigator) {
+    try {
+      const blob = doc.output('blob');
+      const file = new File([blob], fileName, { type: 'application/pdf' });
+      const nav = navigator as Navigator & {
+        canShare?: (data: ShareData) => boolean;
+      };
+      if (!nav.canShare || nav.canShare({ files: [file] })) {
+        await navigator.share({
+          title: `Reporte de glucosa - ${profile.name}`,
+          text: `Historial de glucosa generado con Glucosoft App (${rangeLabel}).`,
+          files: [file],
+        });
+        return { fileName, sharedViaSystem: true };
+      }
+    } catch {
+      // Fallback to direct download if user cancels share or browser blocks file share
+    }
+  }
+
   doc.save(fileName);
-  return fileName;
+  return { fileName, sharedViaSystem: false };
 }

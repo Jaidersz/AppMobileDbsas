@@ -5,18 +5,24 @@ export type BiomedicalDeviceId =
   | 'GlucoLeader_Enhance'
   | 'Glucocare_D'
   | 'Glucomax'
-  | 'Glucocare_Match';
+  | 'Glucocare_Match'
+  | 'Otro_Compatible';
+
+export type HardwareVerificationStatus =
+  | 'needs_physical_validation'
+  | 'standard_ble_candidate'
+  | 'non_ble_base_variant_possible';
 
 export interface BiomedicalDeviceSpec {
   id: BiomedicalDeviceId;
   displayName: string;
-  advertisedName: string;
-  readTimeSeconds: 5 | 8;
+  advertisedNames: string[];
+  confirmedReadTimeSeconds?: 5 | 8;
   supportsMultiSample: boolean;
-  memoryCapacity: number;
-  serviceUuid: string;
-  characteristicUuid: string;
-  racpUuid: string;
+  memoryCapacityLabel: string;
+  hasConfirmedBluetooth: boolean;
+  verificationStatus: HardwareVerificationStatus;
+  protocolNotes: string;
   summary: string;
 }
 
@@ -30,7 +36,13 @@ export type MeasurementContext =
 
 export type GlucoseSeverity = 'normal' | 'caution' | 'alert';
 
-export type ReadingSource = 'ble' | 'ble_sync' | 'manual';
+export type CaptureMethod = 'manual' | 'bluetooth';
+
+export interface EmergencyContact {
+  name: string;
+  relation: string;
+  phone: string;
+}
 
 export interface LocalProfile {
   id: string;
@@ -40,24 +52,30 @@ export interface LocalProfile {
   targetMaxMgDl: number;
   accentHex: string;
   createdAt: number;
+  updatedAt?: number;
+  emergencyContact?: EmergencyContact;
 }
 
 export interface GlucoseReading {
   id: string;
   profileId: string;
   valueMgDl: number;
+  originalUnit?: GlucoseUnit;
   timestamp: number;
   context: MeasurementContext;
   quickTags: string[];
   note: string;
-  deviceInfo: BiomedicalDeviceId;
-  source: ReadingSource;
-  multiSampleValuesMgDl?: [number, number];
+  captureMethod: CaptureMethod;
+  deviceModel: string;
+  deviceId?: BiomedicalDeviceId;
+  deviceInfoSummary?: string;
 }
 
-export type AppSection =
-  | 'prototype'
-  | 'isar'
-  | 'wireframes'
-  | 'ble'
-  | 'architecture';
+export type PatientTab =
+  | 'home'
+  | 'history'
+  | 'devices'
+  | 'emergency'
+  | 'profiles';
+
+export type TextScaleMode = 'normal' | 'large';

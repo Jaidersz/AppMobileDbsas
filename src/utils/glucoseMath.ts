@@ -29,71 +29,77 @@ export function convertForChart(valueMgDl: number, unit: GlucoseUnit): number {
   return Math.round(valueMgDl);
 }
 
+/**
+ * Evaluación orientativa según rangos configurables del perfil.
+ * No constituye diagnóstico médico.
+ */
 export function evaluateReadingSeverity(
   valueMgDl: number,
-  context: MeasurementContext
+  context: MeasurementContext,
+  targetMinMgDl = 70,
+  targetMaxMgDl = 140
 ): {
   severity: GlucoseSeverity;
   label: string;
   detail: string;
 } {
   const isPostMeal = context === 'post_meal_1h' || context === 'post_meal_2h';
+  const lowAlertThreshold = Math.max(40, targetMinMgDl - 15);
+  const effectiveUpperBound = isPostMeal
+    ? Math.max(targetMaxMgDl, 180)
+    : targetMaxMgDl;
+  const highAlertThreshold = Math.max(effectiveUpperBound + 60, 240);
 
-  if (valueMgDl < 55) {
+  if (valueMgDl < lowAlertThreshold) {
     return {
       severity: 'alert',
-      label: 'Alerta · Hipoglucemia',
-      detail: 'Por debajo de 55 mg/dL. Requiere atención inmediata.',
+      label: 'Valor muy bajo · Atención',
+      detail:
+        'Valor orientativo muy por debajo de tu meta. Si sientes malestar, busca apoyo y comunícate con tu contacto de emergencia o profesional de salud.',
     };
   }
 
-  if (valueMgDl < 70) {
+  if (valueMgDl < targetMinMgDl) {
     return {
       severity: 'caution',
-      label: 'Precaución · Baja',
-      detail: 'Rango bajo (55–69 mg/dL). Vigilar síntomas.',
+      label: 'Por debajo de tu meta · Precaución',
+      detail:
+        'Resultado orientativo por debajo de tu rango configurado. Sigue las indicaciones de tu profesional de salud.',
     };
   }
 
-  if (valueMgDl > 240) {
+  if (valueMgDl > highAlertThreshold) {
     return {
       severity: 'alert',
-      label: 'Alerta · Muy alta',
-      detail: 'Supera 240 mg/dL. Consultar pauta médica.',
+      label: 'Valor muy alto · Atención',
+      detail:
+        'Valor orientativo muy elevado respecto a tu rango configurado. Consulta con tu profesional de salud según tu plan de cuidado.',
     };
   }
 
-  if (isPostMeal) {
-    if (valueMgDl <= 180) {
-      return {
-        severity: 'normal',
-        label: 'En rango',
-        detail: 'Valor postprandial óptimo (70–180 mg/dL).',
-      };
-    }
-    return {
-      severity: 'caution',
-      label: 'Precaución · Elevada',
-      detail: 'Pico postprandial elevado (181–240 mg/dL).',
-    };
-  }
-
-  if (valueMgDl <= 130) {
+  if (valueMgDl <= effectiveUpperBound) {
     return {
       severity: 'normal',
-      label: 'En rango',
-      detail: 'Valor basal dentro de objetivo clínico (70–130 mg/dL).',
+      label: 'Dentro de tu meta orientativa',
+      detail: isPostMeal
+        ? 'Dentro de tu rango de referencia después de comer.'
+        : 'Dentro del rango orientativo configurado en tu perfil.',
     };
   }
 
   return {
     severity: 'caution',
-    label: 'Precaución · Elevada',
-    detail: 'Por encima del objetivo basal (131–240 mg/dL).',
+    label: 'Por encima de tu meta · Precaución',
+    detail:
+      'Resultado orientativo superior a tu rango configurado. Estos colores son solo una guía visual y no reemplazan el criterio médico.',
   };
 }
 
-export function computeGlucoseStats(readings: GlucoseReading[]) {
+export function computeGlucoseStats(
+  readings: GlucoseReading[],
+  targetMinMgDl = 70,
+  targetMaxMgDl = 140
+) {
   if (readings.length === 0) {
     return {
       count: 0,
@@ -119,14 +125,18 @@ export function computeGlucoseStats(readings: GlucoseReading[]) {
     sum += r.valueMgDl;
     if (r.valueMgDl < min) min = r.valueMgDl;
     if (r.valueMgDl > max) max = r.valueMgDl;
-    const { severity } = evaluateReadingSeverity(r.valueMgDl, r.context);
+    const { severity } = evaluateReadingSeverity(
+      r.valueMgDl,
+      r.context,
+      targetMinMgDl,
+      targetMaxMgDl
+    );
     if (severity === 'normal') normalCount++;
     else if (severity === 'caution') cautionCount++;
     else alertCount++;
   }
 
   const avgMgDl = sum / readings.length;
-  // Clinical Glucose Management Indicator (GMI %) formula from mean glucose mg/dL
   const estimatedGmi = Number((3.31 + 0.02392 * avgMgDl).toFixed(1));
 
   return {
@@ -142,10 +152,6 @@ export function computeGlucoseStats(readings: GlucoseReading[]) {
   };
 }
 
-/**
- * Deduplica lecturas entrantes desde la memoria interna del glucómetro
- * cruzando el timestamp normalizado al minuto + dispositivo + perfil.
- */
 export function deduplicateIncomingReadings(
   existing: GlucoseReading[],
   incoming: Omit<GlucoseReading, 'id'>[]

@@ -1,78 +1,64 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
-import { FlutterBlueprintView } from './components/FlutterBlueprintView';
 import { PrototypeWorkspace } from './components/PrototypeWorkspace';
+import { MAX_LOCAL_PROFILES, PROFILE_COLORS } from './data/devicesAndSeeds';
 import {
-  MAX_LOCAL_PROFILES,
-  PROFILE_COLORS,
-  createSeedData,
-} from './data/devicesAndSeeds';
-import {
-  AppSection,
+  EmergencyContact,
   GlucoseReading,
   GlucoseUnit,
   LocalProfile,
+  PatientTab,
+  TextScaleMode,
 } from './types/glucose';
+import {
+  PREFS_KEYS,
+  initializeOrMigrateLocalDb,
+  readInitialOnboardingDone,
+  readInitialTextScale,
+  saveLocalDb,
+} from './utils/localDb';
 import { exportClinicalPdfReport } from './utils/pdfReport';
 
-const STORAGE_KEYS = {
-  profiles: 'glucopulse_profiles_v1',
-  readings: 'glucopulse_readings_v1',
-  activeProfileId: 'glucopulse_active_profile_v1',
-  theme: 'glucopulse_theme_v1',
-};
-
-function loadInitialState() {
-  const seed = createSeedData();
-  try {
-    const rawProfiles = localStorage.getItem(STORAGE_KEYS.profiles);
-    const rawReadings = localStorage.getItem(STORAGE_KEYS.readings);
-    const rawActive = localStorage.getItem(STORAGE_KEYS.activeProfileId);
-
-    const parsedProfiles: LocalProfile[] = rawProfiles
-      ? JSON.parse(rawProfiles)
-      : seed.profiles;
-    const parsedReadings: GlucoseReading[] = rawReadings
-      ? JSON.parse(rawReadings)
-      : seed.readings;
-
-    const validProfiles = Array.isArray(parsedProfiles)
-      ? parsedProfiles.slice(0, MAX_LOCAL_PROFILES)
-      : seed.profiles;
-
-    const activeId =
-      rawActive && validProfiles.some((p) => p.id === rawActive)
-        ? rawActive
-        : (validProfiles[0]?.id ?? '');
-
-    return {
-      profiles: validProfiles,
-      readings: Array.isArray(parsedReadings) ? parsedReadings : seed.readings,
-      activeProfileId: activeId,
-    };
-  } catch {
-    return {
-      profiles: seed.profiles,
-      readings: seed.readings,
-      activeProfileId: seed.profiles[0].id,
-    };
-  }
-}
+const PATIENT_NAV_ITEMS: { id: PatientTab; label: string }[] = [
+  { id: 'home', label: 'Inicio' },
+  { id: 'history', label: 'Historial' },
+  { id: 'devices', label: 'Glucómetro' },
+  { id: 'emergency', label: 'Emergencia' },
+  { id: 'profiles', label: 'Perfiles' },
+];
 
 export default function App() {
-  const initial = useMemo(() => loadInitialState(), []);
+  const initial = useMemo(() => initializeOrMigrateLocalDb(localStorage), []);
 
   const [profiles, setProfiles] = useState<LocalProfile[]>(initial.profiles);
   const [readings, setReadings] = useState<GlucoseReading[]>(initial.readings);
   const [activeProfileId, setActiveProfileId] = useState<string>(
     initial.activeProfileId
   );
-  const [activeSection, setActiveSection] = useState<AppSection>('prototype');
-  const [pdfToast, setPdfToast] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<PatientTab>('home');
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+
+  const [showGuide, setShowGuide] = useState<boolean>(() => {
+    try {
+      return !readInitialOnboardingDone(localStorage);
+    } catch {
+      return true;
+    }
+  });
+
+  const [textScale, setTextScale] = useState<TextScaleMode>(() => {
+    try {
+      return readInitialTextScale(localStorage);
+    } catch {
+      return 'normal';
+    }
+  });
 
   const [isDark, setIsDark] = useState<boolean>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.theme);
+      const saved =
+        localStorage.getItem(PREFS_KEYS.theme) ??
+        localStorage.getItem('glucopulse_theme_v1');
       if (saved === 'dark') return true;
       if (saved === 'light') return false;
       return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
@@ -86,7 +72,7 @@ export default function App() {
     if (isDark) root.classList.add('dark');
     else root.classList.remove('dark');
     try {
-      localStorage.setItem(STORAGE_KEYS.theme, isDark ? 'dark' : 'light');
+      localStorage.setItem(PREFS_KEYS.theme, isDark ? 'dark' : 'light');
     } catch {
       // Ignore storage errors
     }
@@ -94,16 +80,43 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.profiles, JSON.stringify(profiles));
-      localStorage.setItem(STORAGE_KEYS.readings, JSON.stringify(readings));
-      localStorage.setItem(STORAGE_KEYS.activeProfileId, activeProfileId);
+      localStorage.setItem(PREFS_KEYS.textScale, textScale);
+    } catch {
+      // Ignore storage errors
+    }
+  }, [textScale]);
+
+  useEffect(() => {
+    try {
+      saveLocalDb(localStorage, {
+        schemaVersion: 2,
+        profiles,
+        readings,
+        activeProfileId,
+      });
     } catch {
       // Ignore storage quota errors
     }
   }, [profiles, readings, activeProfileId]);
 
+  const notify = (message: string) => {
+    setActionFeedback(message);
+    window.setTimeout(() => {
+      setActionFeedback((curr) => (curr === message ? null : curr));
+    }, 4500);
+  };
+
   const activeProfile: LocalProfile | null =
     profiles.find((p) => p.id === activeProfileId) ?? profiles[0] ?? null;
+
+  const handleCloseGuide = () => {
+    setShowGuide(false);
+    try {
+      localStorage.setItem(PREFS_KEYS.onboardingDone, 'true');
+    } catch {
+      // Ignore storage errors
+    }
+  };
 
   const handleCreateProfile = (name: string, unit: GlucoseUnit) => {
     if (profiles.length >= MAX_LOCAL_PROFILES) return;
@@ -120,6 +133,22 @@ export default function App() {
     setActiveProfileId(newProfile.id);
   };
 
+  const handleUpdateProfile = (
+    id: string,
+    updates: {
+      name: string;
+      unitPreference: GlucoseUnit;
+      targetMinMgDl: number;
+      targetMaxMgDl: number;
+    }
+  ) => {
+    setProfiles((prev) =>
+      prev.map((p) =>
+        p.id === id ? { ...p, ...updates, updatedAt: Date.now() } : p
+      )
+    );
+  };
+
   const handleDeleteProfile = (id: string) => {
     const remaining = profiles.filter((p) => p.id !== id);
     setProfiles(remaining);
@@ -131,7 +160,20 @@ export default function App() {
 
   const handleChangeProfileUnit = (id: string, unit: GlucoseUnit) => {
     setProfiles((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, unitPreference: unit } : p))
+      prev.map((p) =>
+        p.id === id ? { ...p, unitPreference: unit, updatedAt: Date.now() } : p
+      )
+    );
+  };
+
+  const handleUpdateEmergencyContact = (
+    profileId: string,
+    contact: EmergencyContact
+  ) => {
+    setProfiles((prev) =>
+      prev.map((p) =>
+        p.id === profileId ? { ...p, emergencyContact: contact } : p
+      )
     );
   };
 
@@ -151,58 +193,46 @@ export default function App() {
     setReadings((prev) => prev.filter((r) => r.id !== id));
   };
 
-  const handleResetDemo = () => {
-    const seed = createSeedData();
-    setProfiles(seed.profiles);
-    setReadings(seed.readings);
-    setActiveProfileId(seed.profiles[0].id);
-  };
-
-  const handleExportPdf = (
+  const handleExportPdf = async (
     readingsToExport?: GlucoseReading[],
-    rangeLabel = 'Historial completo'
+    rangeLabel = 'Historial completo',
+    shareIfAvailable = false
   ) => {
     if (!activeProfile) return;
     const targetReadings =
       readingsToExport ??
       readings.filter((r) => r.profileId === activeProfile.id);
-    const fileName = exportClinicalPdfReport(
+    const result = await exportClinicalPdfReport(
       activeProfile,
       targetReadings,
-      rangeLabel
+      rangeLabel,
+      shareIfAvailable
     );
-    setPdfToast(`Reporte clínico generado y descargado: ${fileName}`);
-    window.setTimeout(() => setPdfToast(null), 4500);
+    notify(
+      result.sharedViaSystem
+        ? `Reporte compartido (${result.fileName}).`
+        : `Tu reporte en PDF está listo (${result.fileName}).`
+    );
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#090D16] text-slate-900 dark:text-slate-100 transition-colors">
-      {/* Strict 3-Zone Top Bar Contract */}
-      <header className="sticky top-0 z-40 bg-white/90 dark:bg-[#090D16]/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          {/* Zone 1: Single-element Brand Wordmark */}
+    <div className="min-h-screen bg-[#F6F8F7] dark:bg-[#0B111A] text-slate-900 dark:text-slate-100 transition-colors flex flex-col">
+      {/* Clean, Friendly 3-Zone Top Bar */}
+      <header className="sticky top-0 z-40 bg-white/95 dark:bg-[#0B111A]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
           <button
             type="button"
-            onClick={() => setActiveSection('prototype')}
-            className="text-lg font-display font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
+            onClick={() => setActiveSection('home')}
+            className="text-xl font-display font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
           >
-            DbSas
+            Glucosoft App
           </button>
 
-          {/* Zone 2: 5 single-line navigation links */}
           <nav
             className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-400"
             aria-label="Navegación principal"
           >
-            {(
-              [
-                { id: 'prototype', label: 'Prototipo' },
-                { id: 'isar', label: 'Esquema Isar' },
-                { id: 'wireframes', label: 'Wireframes' },
-                { id: 'ble', label: 'Lógica BLE' },
-                { id: 'architecture', label: 'Arquitectura' },
-              ] as const
-            ).map((navItem) => {
+            {PATIENT_NAV_ITEMS.map((navItem) => {
               const active = activeSection === navItem.id;
               return (
                 <button
@@ -211,7 +241,7 @@ export default function App() {
                   onClick={() => setActiveSection(navItem.id)}
                   className={`py-1 whitespace-nowrap shrink-0 transition-colors border-b-2 ${
                     active
-                      ? 'text-slate-900 dark:text-white border-blue-600 dark:border-blue-400 font-semibold'
+                      ? 'text-teal-800 dark:text-teal-300 border-teal-700 dark:border-teal-400 font-semibold'
                       : 'border-transparent hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
@@ -221,100 +251,74 @@ export default function App() {
             })}
           </nav>
 
-          {/* Zone 3: 1 Primary CTA */}
           <div className="shrink-0">
             <button
               type="button"
               onClick={() => handleExportPdf()}
               disabled={!activeProfile}
-              className="min-h-[40px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2"
+              className="min-h-[42px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-40 text-white text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>Exportar PDF</span>
+              <Download className="w-4 h-4" />
+              <span>Reporte PDF</span>
             </button>
           </div>
         </div>
-
-        {/* Mobile compact nav row */}
-        <nav
-          className="md:hidden px-4 pb-2.5 flex items-center gap-4 overflow-x-auto text-xs font-medium text-slate-600 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800/70 pt-2"
-          aria-label="Navegación móvil de secciones"
-        >
-          {(
-            [
-              { id: 'prototype', label: 'Prototipo' },
-              { id: 'isar', label: 'Esquema Isar' },
-              { id: 'wireframes', label: 'Wireframes' },
-              { id: 'ble', label: 'Lógica BLE' },
-              { id: 'architecture', label: 'Arquitectura' },
-            ] as const
-          ).map((navItem) => {
-            const active = activeSection === navItem.id;
-            return (
-              <button
-                key={navItem.id}
-                type="button"
-                onClick={() => setActiveSection(navItem.id)}
-                className={`whitespace-nowrap shrink-0 pb-1 border-b-2 ${
-                  active
-                    ? 'text-slate-900 dark:text-white border-blue-600 font-semibold'
-                    : 'border-transparent'
-                }`}
-              >
-                {navItem.label}
-              </button>
-            );
-          })}
-        </nav>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-        <div className="max-w-3xl space-y-2">
-          <p className="text-xs font-medium text-blue-600 dark:text-blue-400">
-            {activeSection === 'prototype'
-              ? 'DbSas · Control en tu dispositivo'
-              : 'DbSas · Especificación de Ingeniería'}
-          </p>
+      <main className="max-w-6xl w-full mx-auto px-4 sm:px-6 py-7 space-y-6 flex-1">
+        <div className="max-w-2xl space-y-1.5">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
-            {activeSection === 'prototype'
-              ? 'Seguimiento Glucémico Personal'
-              : 'Blueprint técnico de ingeniería en Flutter, Isar Database y BLE'}
+            {activeProfile
+              ? `Hola, ${activeProfile.name}`
+              : 'Bienvenido a Glucosoft App'}
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-            {activeSection === 'prototype'
-              ? 'Monitoreo diario, historial de tomas y reportes clínicos listos para tu consulta médica.'
-              : 'Especificación lista para producción con esquemas Isar, flujo de pantallas, protocolo BLE filtrado para los 5 equipos certificados y arquitectura limpia.'}
+          <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
+            Tu control diario de glucosa, claro, privado y siempre disponible sin internet.
           </p>
         </div>
 
-        {activeSection === 'prototype' ? (
-          <PrototypeWorkspace
-            profiles={profiles}
-            activeProfile={activeProfile}
-            readings={readings}
-            isDark={isDark}
-            onToggleTheme={() => setIsDark((d) => !d)}
-            onSelectProfile={setActiveProfileId}
-            onCreateProfile={handleCreateProfile}
-            onDeleteProfile={handleDeleteProfile}
-            onChangeProfileUnit={handleChangeProfileUnit}
-            onAddReading={handleAddReading}
-            onAddBatchReadings={handleAddBatchReadings}
-            onDeleteReading={handleDeleteReading}
-            onResetDemo={handleResetDemo}
-            pdfToast={pdfToast}
-            onExportPdf={(subset, label) => handleExportPdf(subset, label)}
-          />
-        ) : (
-          <FlutterBlueprintView
-            activeSection={activeSection}
-            onSelectSection={setActiveSection}
-            isDark={isDark}
-            onToggleTheme={() => setIsDark((d) => !d)}
-          />
-        )}
+        <PrototypeWorkspace
+          profiles={profiles}
+          activeProfile={activeProfile}
+          readings={readings}
+          activeTab={activeSection}
+          onSelectTab={setActiveSection}
+          isDark={isDark}
+          onToggleTheme={() => setIsDark((d) => !d)}
+          textScale={textScale}
+          onToggleTextScale={() =>
+            setTextScale((s) => (s === 'normal' ? 'large' : 'normal'))
+          }
+          showGuide={showGuide}
+          onOpenGuide={() => setShowGuide(true)}
+          onCloseGuide={handleCloseGuide}
+          onSelectProfile={setActiveProfileId}
+          onCreateProfile={handleCreateProfile}
+          onUpdateProfile={handleUpdateProfile}
+          onDeleteProfile={handleDeleteProfile}
+          onChangeProfileUnit={handleChangeProfileUnit}
+          onUpdateEmergencyContact={handleUpdateEmergencyContact}
+          onAddReading={handleAddReading}
+          onAddBatchReadings={handleAddBatchReadings}
+          onDeleteReading={handleDeleteReading}
+          actionFeedback={actionFeedback}
+          onNotify={notify}
+          onExportPdf={(subset, label, share) =>
+            handleExportPdf(subset, label, share)
+          }
+        />
       </main>
+
+      <footer className="border-t border-slate-200/70 dark:border-slate-800/80 py-5 px-4 sm:px-6 mt-8">
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
+          <span>
+            Glucosoft App · Tus datos se guardan únicamente de forma privada en este dispositivo.
+          </span>
+          <span>
+            Información orientativa; no sustituye evaluación médica profesional.
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }

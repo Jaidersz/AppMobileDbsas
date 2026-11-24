@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { DEVICE_BY_ID, MEASUREMENT_CONTEXTS } from '../data/devicesAndSeeds';
+import { MEASUREMENT_CONTEXTS } from '../data/devicesAndSeeds';
 import { GlucoseReading, GlucoseUnit } from '../types/glucose';
 import {
   convertForChart,
@@ -75,10 +75,15 @@ export const TrendChart: React.FC<TrendChartProps> = ({
           : padLeft + ((r.timestamp - minTime) / span) * plotW;
       const converted = convertForChart(r.valueMgDl, unit);
       const y = getY(converted);
-      const { severity, label } = evaluateReadingSeverity(r.valueMgDl, r.context);
+      const { severity, label } = evaluateReadingSeverity(
+        r.valueMgDl,
+        r.context,
+        targetMinMgDl,
+        targetMaxMgDl
+      );
       return { reading: r, x, y, severity, statusLabel: label, idx };
     });
-  }, [sorted, unit, minVal, maxVal, plotW, plotH]);
+  }, [sorted, unit, minVal, maxVal, plotW, plotH, targetMinMgDl, targetMaxMgDl]);
 
   const linePath = useMemo(() => {
     if (points.length < 2) return '';
@@ -104,10 +109,10 @@ export const TrendChart: React.FC<TrendChartProps> = ({
     return (
       <div className="flex flex-col items-center justify-center h-60 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 text-center px-6">
         <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-          Sin registros en este rango temporal
+          Aún no hay mediciones en estas fechas
         </p>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Captura una medición BLE o amplía el filtro de fechas para visualizar la curva glucémica.
+          Registra una nueva medición o selecciona un periodo más amplio para ver cómo ha variado tu glucosa.
         </p>
       </div>
     );
@@ -115,7 +120,6 @@ export const TrendChart: React.FC<TrendChartProps> = ({
 
   return (
     <div className="space-y-3">
-      {/* Inspection bar */}
       {activePoint && (
         <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/70 text-xs">
           <div className="flex items-center gap-3">
@@ -140,22 +144,20 @@ export const TrendChart: React.FC<TrendChartProps> = ({
           <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 tabular-nums">
             <span>{contextLabels[activePoint.reading.context]}</span>
             <span aria-hidden="true">·</span>
-            <span>{DEVICE_BY_ID[activePoint.reading.deviceInfo]?.displayName}</span>
+            <span>{activePoint.reading.deviceModel}</span>
             <span aria-hidden="true">·</span>
             <span>{formatShortDateTime(activePoint.reading.timestamp)}</span>
           </div>
         </div>
       )}
 
-      {/* SVG Canvas */}
       <div className="w-full overflow-hidden">
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="w-full h-auto select-none"
           role="img"
-          aria-label="Gráfico de tendencia glucémica"
+          aria-label="Gráfico de evolución de glucosa"
         >
-          {/* Target Range Band */}
           <rect
             x={padLeft}
             y={Math.min(bandTopY, bandBottomY)}
@@ -169,11 +171,10 @@ export const TrendChart: React.FC<TrendChartProps> = ({
             y={Math.min(bandTopY, bandBottomY) + 12}
             className="fill-emerald-700/75 dark:fill-emerald-400/75 text-[10px] font-medium"
           >
-            Objetivo ({formatGlucoseValue(targetMinMgDl, unit)}–
+            Meta orientativa ({formatGlucoseValue(targetMinMgDl, unit)}–
             {formatGlucoseValue(targetMaxMgDl, unit)} {unit})
           </text>
 
-          {/* Y Gridlines */}
           {yTicks.map((tick) => {
             const y = getY(tick);
             return (
@@ -199,7 +200,6 @@ export const TrendChart: React.FC<TrendChartProps> = ({
             );
           })}
 
-          {/* Line Path */}
           {linePath && (
             <path
               d={linePath}
@@ -211,7 +211,6 @@ export const TrendChart: React.FC<TrendChartProps> = ({
             />
           )}
 
-          {/* Data Points */}
           {points.map((pt) => {
             const isActive = activePoint?.reading.id === pt.reading.id;
             const fillClass =
@@ -240,7 +239,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({
                     y1={padTop}
                     x2={pt.x}
                     y2={height - padBottom}
-                    className="stroke-blue-500/35 dark:stroke-blue-400/35"
+                    className="stroke-teal-500/35 dark:stroke-teal-400/35"
                     strokeWidth={1}
                   />
                 )}
@@ -251,13 +250,11 @@ export const TrendChart: React.FC<TrendChartProps> = ({
                   className={`${fillClass} ${strokeClass} transition-transform duration-150`}
                   strokeWidth={isActive ? 3 : 2}
                 />
-                {/* Invisible touch hitbox */}
                 <circle cx={pt.x} cy={pt.y} r={16} fill="transparent" />
               </g>
             );
           })}
 
-          {/* X Axis Start / End dates */}
           {points.length > 0 && (
             <>
               <text
